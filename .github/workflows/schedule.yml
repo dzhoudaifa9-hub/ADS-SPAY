@@ -1,0 +1,31 @@
+name: Daily Ad Spy Report
+
+on:
+  schedule:
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+
+jobs:
+  spy_job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: سحب ملفات المشروع
+        uses: actions/checkout@v4
+
+      - name: تجهيز لغة بايثون
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: تثبيت المكتبات والمتصفح الخفي
+        run: |
+          pip install requests playwright google-generativeai
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: تشغيل الفحص وإرسال التقرير لتيليجرام
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python daily_spy.py
