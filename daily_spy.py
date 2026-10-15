@@ -12,6 +12,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
+# الكلمات المفتاحية (يمكنك تعديلها أو إضافة مجالات تهمك)
 KEYWORDS = [
     "التوصيل لباب المنزل",
     "الدفع عند الاستلام",
@@ -20,7 +21,7 @@ KEYWORDS = [
 ]
 
 def scrape_ads_with_links(keywords, country="DZ"):
-    """سحب نصوص الإعلانات مع استخراج الروابط وأرقام الإعلانات"""
+    """سحب الإعلانات مع فك تشفير روابط المتاجر وأرقام الإعلانات بدقة"""
     combined_data = ""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -32,20 +33,51 @@ def scrape_ads_with_links(keywords, country="DZ"):
             try:
                 page.goto(url, timeout=60000)
                 time.sleep(5)
-                page.mouse.wheel(0, 4000)
-                time.sleep(3)
+                # التمرير لأسفل لتحميل مجموعة جيدة من الإعلانات
+                for _ in range(3):
+                    page.mouse.wheel(0, 3000)
+                    time.sleep(2)
                 
-                # استخراج النص مع جميع الروابط (صفحات الهبوط وصفحات فيسبوك) عبر JavaScript
+                # استخراج كل إعلان مع الروابط الخاصة به وفك روابط فيسبوك المباشرة
                 extracted = page.evaluate("""() => {
-                    let text = document.body.innerText;
-                    let links = Array.from(document.querySelectorAll('a'))
-                        .map(a => a.href)
-                        .filter(href => href && !href.includes('facebook.com/ads/library') && !href.includes('help'));
-                    let uniqueLinks = [...new Set(links)].slice(0, 40);
-                    return text.substring(0, 7000) + "\\n\\n--- الروابط المستخرجة من الصفحة ---\\n" + uniqueLinks.join("\\n");
+                    let results = [];
+                    let blocks = Array.from(document.querySelectorAll('div')).filter(
+                        el => (el.innerText.includes('Library ID:') || el.innerText.includes('معرف المكتبة:')) 
+                        && el.innerText.length > 100 && el.innerText.length < 2500
+                    );
+                    
+                    let seenIds = new Set();
+                    for (let b of blocks) {
+                        let text = b.innerText;
+                        let idMatch = text.match(/(?:Library ID|معرف المكتبة|ID de la bibliothèque)\\s*:\\s*(\\d+)/i);
+                        let adId = idMatch ? idMatch[1] : null;
+                        
+                        if (adId && !seenIds.has(adId)) {
+                            seenIds.add(adId);
+                            let links = Array.from(b.querySelectorAll('a')).map(a => {
+                                try {
+                                    let u = new URL(a.href);
+                                    // فك رابط التوجيه الخاص بفيسبوك لاستخراج رابط المتجر الأصلي مباشرة
+                                    if (u.hostname.includes('l.facebook.com') && u.searchParams.get('u')) {
+                                        return decodeURIComponent(u.searchParams.get('u'));
+                                    }
+                                    return a.href;
+                                } catch(e) { return a.href; }
+                            }).filter(h => h && !h.includes('ads/library') && !h.includes('/help/'));
+                            
+                            let uniqueLinks = [...new Set(links)];
+                            results.push(`📌 [رقم الإعلان ID: ${adId}]\nالنص:\n${text}\nالروابط المرفقة بهذا الإعلان:\n${uniqueLinks.join('\\n')}`);
+                        }
+                        if (results.length >= 12) break;
+                    }
+                    
+                    if (results.length === 0) {
+                        return document.body.innerText.substring(0, 8000);
+                    }
+                    return results.join('\\n\\n====================\\n\\n');
                 }""")
                 
-                combined_data += f"\n=== نتائج البحث عن: {kw} ===\n" + extracted
+                combined_data += f"\n\n### نتائج البحث عن الكلمة: {kw} ###\n" + extracted
             except Exception as e:
                 print(f"خطأ في كلمة {kw}: {e}")
                 
@@ -68,22 +100,22 @@ def main():
     
     prompt = f"""
     أنت خبير تجارة إلكترونية (Ad Spy) في السوق الجزائري.
-    هذه بيانات حية مسحوبة من مكتبة إعلانات فيسبوك مع الروابط الموجودة فيها:
+    هذه بيانات حية مسحوبة من مكتبة إعلانات فيسبوك، مقسمة حسب كل إعلان مع رقم تعريفه (ID) وروابطه:
     {raw_data}
     
-    استخرج لي "تقرير أفضل المنتجات الرابحة اليوم" (اختر 4 إلى 6 منتجات).
-    لكل منتج اذكر بوضوح:
+    استخرج لي "تقرير أفضل المنتجات الرابحة اليوم" (اختر أفضل 5 منتجات حقيقية وتجاهل الإعلانات غير التجارية).
+    لكل منتج اذكر بوضوح تام وبنفس هذا الترتيب:
     1. 📦 اسم المنتج وفكرته وتفاصيل السعر/العرض.
-    2. 🏪 اسم الصفحة المعلنة (مع وضع رابطها إن وجد).
-    3. 🔗 رابط مشاهدة الإعلان والصور مباشرة: ابحث عن رقم تعريف الإعلان (Library ID أو معرف المكتبة) الموجود بجانب كل إعلان، وركّبه في هذا الرابط المباشر لكي أضغط عليه وأرى الصور والفيديو:
+    2. 🏪 اسم الصفحة المعلنة ورابطها (إن وجد في الروابط المرفقة).
+    3. 🖼 رابط رؤية الإعلان والصور/الفيديو مباشرة: خذ رقم الإعلان (ID) وضعه في هذا الرابط:
        https://www.facebook.com/ads/library/?id=PUT_ID_HERE
-       (استبدل PUT_ID_HERE بالرقم الحقيقي للإعلان).
-    4. 🌐 رابط صفحة الهبوط (المتجر الإلكتروني): استخرجه من قائمة الروابط المرفقة (غالباً تكون روابط متاجر خارجية أو روابط l.facebook.com).
-    5. 📈 تاريخ بدء الإعلان وتقييمك لسبب نجاحه.
+       (استبدل PUT_ID_HERE برقم الإعلان الحقيقي ليظهر كرابط قابل للضغط).
+    4. 🛒 رابط صفحة الهبوط (المتجر الإلكتروني): ضع الرابط الخارجي للمتجر المرفق مع الإعلان (أو اكتب "البيع عبر رسائل الصفحة" إذا كان الرابط يوجه إلى فيسبوك/ماسنجر/واتساب فقط).
+    5. 📈 تاريخ بدء الإعلان ولماذا تراه منتجاً رابحاً؟
     """
     
     response = model.generate_content(prompt)
-    send_telegram_report(f"🕵️‍♂️ تقرير التجسس اليومي (مدعم بالروابط المباشرة):\n\n{response.text}")
+    send_telegram_report(f"🕵️‍♂️ تقرير التجسس اليومي (مدعم بروابط الصور والمتاجر):\n\n{response.text}")
     print("تم إرسال التقرير بنجاح!")
 
 if __name__ == "__main__":
